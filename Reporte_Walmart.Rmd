@@ -1,0 +1,707 @@
+---
+title: "Walmart Inc. — Estructura de deuda, derivados y estrategia de cobertura"
+subtitle: "Proyecto Final · Reporte reproducible"
+author: "Equipo 6 · Grupo 40 — Eduardo Ayala Saldaña (A01192714), Mariann A. Morales Tobias (A01452078), Ulises Salinas López (A00814787)"
+date: "Datos al 1 de noviembre de 2026 · LSEG Workspace"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: show
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 9, fig.height = 5, fig.align = "center")
+
+# Algunos entornos Linux arrancan R con locale "C", lo que rompe los acentos al
+# imprimir data frames. Esto lo corrige sin afectar a Windows ni macOS.
+if (!isTRUE(l10n_info()$`UTF-8`)) {
+  for (lc in c("C.utf8", "en_US.UTF-8", "es_MX.UTF-8")) {
+    try(Sys.setlocale("LC_ALL", lc), silent = TRUE)
+    if (isTRUE(l10n_info()$`UTF-8`)) break
+  }
+}
+# Paleta usada en todo el documento. Se define una sola vez y no se vuelve a tocar.
+AZUL <- "#2a78d6"; NARANJA <- "#eb6834"; VERDE <- "#1baf7a"; GRIS <- "#898781"
+REJILLA <- "#e1e0d9"; TINTA <- "#52514e"
+panel <- function(...) { par(mar = c(4.2, 4.4, 1.2, 1.2), las = 1,
+                            col.axis = TINTA, col.lab = TINTA, fg = REJILLA) }
+pct <- function(x, d = 2) paste0(formatC(x, format = "f", digits = d), "%")
+usd <- function(x, d = 0) paste0("$", formatC(x, format = "f", digits = d, big.mark = ","))
+```
+
+# Objeto del reporte
+
+Este documento acompaña al Proyecto Final y cubre los puntos **B (datos y fuentes)**,
+**C (deuda y vencimientos)**, **H (volatilidad implícita y griegas)** e **I (escenarios
+y sensibilidad)** del checklist de la actividad.
+
+El caso modelo es *Molson Coors Brewing Co.: Valuing a Convertible Bond* (NE90-06-107).
+La pregunta que replicamos para Walmart es la misma que enfrentó Molson Coors en junio de
+2007: cómo financiarse más barato y cubrir riesgos de tesorería usando bonos convertibles,
+opciones, futuros y swaps.
+
+Todo el código está a la vista y el documento es autocontenido: los datos vienen embebidos
+en los propios bloques de código, de modo que el reporte se reproduce con *Knit* sin
+archivos externos ni paquetes adicionales a `knitr`.
+
+```{r parametros}
+# ---- Parámetros de mercado (LSEG Workspace, corte 1-nov-2026) ----
+S0      <- 123.51      # Cierre de WMT.O (NASDAQ) del viernes 30-oct-2026
+DIV     <- 0.25        # Dividendo trimestral declarado
+T_DIV   <- 40/365      # Días al ex-dividendo (11-dic-2026)
+T_EXP   <- 47/365      # Días al vencimiento de opciones (18-dic-2026)
+RF      <- 0.0403      # Tasa libre de riesgo a 47 días, de la curva del Tesoro
+SIGMA_LP<- 0.29        # Volatilidad implícita de LEAPs (ene-2029)
+Q_DIV   <- 0.0081      # Dividend yield prospectivo FY ene-2027
+BETA    <- 0.54        # Beta 5 años mensual
+WACC    <- 0.06425     # Costo promedio ponderado de capital
+
+data.frame(Parametro = c("Spot WMT.O", "Dividendo trimestral", "Días a ex-dividendo",
+                         "Días a vencimiento", "Tasa libre de riesgo", "Volatilidad LEAPs",
+                         "Dividend yield", "Beta", "WACC"),
+           Valor = c(usd(S0,2), usd(DIV,2), "40", "47", pct(RF*100), pct(SIGMA_LP*100),
+                     pct(Q_DIV*100), "0.54", pct(WACC*100)))
+```
+
+# B. Datos y fuentes
+
+## Procedencia
+
+```{r b-fuentes}
+data.frame(
+  Bloque = c("Fundamentales", "Deuda bono por bono", "Cadena de opciones",
+             "Curva del Tesoro", "Precio de la acción"),
+  Aplicacion = c("Company Fundamentals", "Government and Corporate Bonds (GOVSRCH)",
+                 "Option Watch (OPW)", "Government Bond Prices", "Overview / Quote"),
+  Corte = c("FY2027 Q2 (31-jul-2026)", "23-oct-2026", "1-nov-2026",
+            "1-nov-2026 (TRADEWEB)", "30-oct-2026"),
+  Registros = c("24 trimestres", "53 emisiones + 26 papel comercial",
+                "10 vencimientos", "13 plazos", "1"))
+```
+
+## Universo de deuda
+
+```{r datos-bonos}
+bonos <- data.frame(
+  cpn = c(5.875,4.18213,4.1,0.52,3.95,3.9,3.7,1.5,4.15576,4,3.25,4.875,2.375,5.05,7.55,4,4.35,4.15,5.75,4.15,1.8,5.15,4.15,4.1,4.45,4.45,5.35,5.625,4.9,5.25,5.25,4.75,5.55,6.5,6.2,3.95,4.95,4.875,5.625,4.875,5,5.625,2.5,4,4.75,4.3,3.625,4.05,2.95,2.65,4.5,4.5,5.25),
+  venc = c("2027-04-05","2027-04-28","2027-04-28","2027-07-16","2027-09-09","2028-04-15","2028-06-26","2028-09-22","2029-04-30","2029-04-30","2029-07-08","2029-09-21","2029-09-24","2029-10-23","2030-02-15","2030-04-15","2030-04-28","2030-10-23","2030-12-19","2031-04-30","2031-09-22","2031-10-23","2032-09-09","2033-04-15","2033-04-30","2033-10-23","2033-10-23","2034-03-27","2035-04-28","2035-09-01","2035-09-28","2036-04-30","2036-10-23","2037-08-15","2038-04-15","2038-06-28","2038-10-23","2039-01-19","2040-04-01","2040-07-08","2040-10-25","2041-04-15","2041-09-22","2043-04-11","2043-10-02","2044-04-22","2047-12-15","2048-06-29","2049-09-24","2051-09-22","2052-09-09","2053-04-15","2056-10-23"),
+  emis = c("2007-04-05","2025-04-28","2025-04-28","2017-07-18","2022-09-09","2023-04-18","2018-06-27","2021-09-22","2026-04-30","2026-04-30","2019-04-23","2009-09-21","2019-09-24","2026-10-23","2000-02-15","2023-04-18","2025-04-28","2026-10-23","2000-12-19","2026-04-30","2021-09-22","2026-10-23","2022-09-09","2023-04-18","2026-04-30","2026-10-23","2026-10-23","2009-03-27","2025-04-28","2005-08-31","2004-09-29","2026-04-30","2026-10-23","2007-08-24","2008-04-15","2018-06-27","2026-10-23","2006-12-19","2010-04-01","2010-07-08","2010-10-25","2011-04-18","2021-09-22","2013-04-11","2013-10-02","2014-04-22","2017-10-20","2018-06-27","2019-09-24","2021-09-22","2022-09-09","2023-04-18","2026-10-23"),
+  mon = c("USD","USD","USD","JPY","USD","USD","USD","USD","USD","USD","USD","EUR","USD","USD","USD","USD","USD","CAD","GBP","USD","USD","USD","USD","USD","USD","CAD","USD","GBP","USD","USD","GBP","USD","USD","USD","USD","USD","CAD","GBP","USD","USD","USD","USD","USD","USD","USD","USD","USD","USD","USD","USD","USD","USD","CAD"),
+  vig = c(372.861,750,750,382.751,1000,750,1479.34,1250,350,650,732.761,1120.2,319.119,750,469.208,500,1000,535.408,668.601,1000,2000,500,1250,1500,1250,1427.76,1000,1337.2,1500,1332.76,1092.83,1000,750,1037.83,803.185,575.138,1249.29,494.278,609.01,276.218,393.46,613.035,1000,413.461,231.195,329.523,433.56,1682.68,628.527,1500,1000,1500,356.939),
+  emitido = c(750,750,750,382.751,1000,750,2750,1250,350,650,1250,1120.2,500,750,1000,500,1000,535.408,668.601,1000,2000,500,1250,1500,1250,1427.76,1000,1337.2,1500,2500,1337.2,1000,750,3000,2000,1500,1249.29,1337.2,1250,750,1250,2000,1000,1000,750,1000,1000,3000,1000,1500,1000,1500,356.939),
+  ytm = c(4.3984,4.1548,4.4854,2.0067,4.7228,4.7467,4.8098,4.746,4.3776,4.8917,4.8943,3.5519,4.9179,4.9345,4.9823,4.9776,4.9518,4.0161,5.1586,5.0186,4.9941,5.0924,5.0255,5.1974,5.231,4.313,5.2554,5.6034,5.3539,5.3905,5.6914,5.4375,5.5012,5.4786,5.5633,5.3938,4.8328,5.9805,5.6665,5.8665,5.5175,5.5851,5.7214,5.8914,6.0569,5.7676,5.8377,5.9151,5.9493,5.9,5.9254,5.8826,5.111),
+  z = c(11.61,NA,17.89,54.04,31.29,16.36,18.64,5.62,NA,14.86,14.04,47.68,15.91,18,21.87,21.29,18.37,51.89,23.35,22.17,17.41,27.71,16.83,31.14,34.7,69.97,35.6,38.88,39.83,42.12,37.84,44.59,49.66,44.43,50.38,30.89,92.59,46.34,52.21,70.48,34.5,40.04,47.41,60.75,77.1,45.23,44.01,52.97,54.82,51.25,57.59,53.74,100.89),
+  precio = c(100.633,100.12,99.8092,98.943,99.3448,98.8105,98.2378,94.1507,99.9959,97.9162,95.8834,103.58,93.1783,100.317,107.72,96.9185,98.0845,100.489,102.174,96.5316,86.2521,100.251,95.5925,94.0341,95.7362,100.819,100.547,100.124,96.9309,99.0143,96.941,94.9462,100.371,108.235,105.343,87.6078,101.057,90.499,99.609,90.7443,94.999,100.39,67.9794,80.2397,86.2742,83.9668,73.3246,77.3744,62.7413,57.8576,81.2486,81.5606,102.121)
+  , stringsAsFactors = FALSE)
+bonos$venc <- as.Date(bonos$venc); bonos$emis <- as.Date(bonos$emis)
+CORTE <- as.Date("2026-10-23")
+bonos$anios <- as.numeric(bonos$venc - CORTE) / 365.25
+bonos$retirado <- 100 * (1 - bonos$vig / bonos$emitido)
+bonos$grupo <- ifelse(bonos$mon == "USD", "USD",
+               ifelse(bonos$mon == "GBP", "GBP",
+               ifelse(bonos$mon == "CAD", "CAD", "Otras")))
+cat("Emisiones:", nrow(bonos),
+    "| Vigente:", usd(sum(bonos$vig), 1), "M",
+    "| Emitido:", usd(sum(bonos$emitido), 1), "M\n")
+```
+
+## Cadena de opciones
+
+```{r datos-opciones}
+opc <- data.frame(
+  K       = c(100,105,110,115,120,125,130,135,140,145,150),
+  c_bid   = c(24.10,19.30,14.85,10.40,7.65,5.00,3.00,1.76,1.00,0.51,0.29),
+  c_ask   = c(24.70,19.90,15.45,11.25,7.90,5.20,3.25,1.90,1.12,0.73,0.35),
+  c_iv    = c(41.4386,36.3626,34.3785,30.7554,32.5337,31.8928,31.4726,31.5559,32.0848,32.8301,32.8526),
+  c_delta = c(0.9419,0.9150,0.8544,0.7743,0.6348,0.4938,0.3551,0.2378,0.1525,0.0959,0.0545),
+  c_gamma = c(0.0066,0.0100,0.0155,0.0228,0.0269,0.0289,0.0273,0.0227,0.0170,0.0120,0.0078),
+  c_vega  = c(0.0420,0.0656,0.0947,0.1255,0.1680,0.1747,0.1674,0.1474,0.1195,0.0890,0.0611),
+  c_theta = c(-0.0276,-0.0349,-0.0443,-0.0504,-0.0669,-0.0666,-0.0618,-0.0538,-0.0438,-0.0332,-0.0200),
+  c_oi    = c(1342,2659,4628,6721,11438,8269,6035,7207,7364,2762,2867),
+  p_bid   = c(0.28,0.56,1.12,2.13,3.65,6.00,8.50,11.70,15.95,19.80,24.60),
+  p_ask   = c(0.34,0.62,1.20,2.24,3.85,6.60,9.85,14.25,18.45,22.00,28.40),
+  p_iv    = c(36.8819,34.7573,33.4685,32.8062,31.7194,32.3758,31.0706,31.7206,32.1334,NA,30.4955),
+  p_delta = c(-0.0441,-0.0805,-0.1452,-0.2431,-0.3688,-0.5106,-0.6524,-0.7667,-0.8563,NA,-0.9867),
+  p_gamma = c(0.0058,0.0099,0.0157,0.0221,0.0275,0.0284,0.0277,0.0230,0.0180,NA,0.0080),
+  p_vega  = c(0.0436,0.0677,0.0969,0.1282,0.1687,0.1748,0.1667,0.1447,0.1106,NA,0.0161),
+  p_theta = c(-0.0170,-0.0247,-0.0335,-0.0428,-0.0536,-0.0551,-0.0482,-0.0410,-0.0293,NA,-0.0028),
+  p_oi    = c(7276,7969,8280,8942,4087,1559,223,2,2,0,0))
+opc$c_mid <- (opc$c_bid + opc$c_ask) / 2
+opc$p_mid <- (opc$p_bid + opc$p_ask) / 2
+cat("Strikes:", nrow(opc), "| rango:", min(opc$K), "a", max(opc$K), "\n")
+```
+
+## Criterio de filtrado
+
+La cadena completa de LSEG abarca strikes de 55 a 195. Se conservaron únicamente los de
+**100 a 150**. Fuera de esa banda las cotizaciones no son informativas: LSEG reporta
+volatilidades implícitas de 57 %, 86 % y hasta 124 %, con `bid` en 0.00 e interés abierto
+nulo. En los strikes de 55 a 77.5 el propio LSEG devuelve las griegas en 0.0000 y la
+volatilidad en blanco, es decir, ni siquiera intenta calcularlas.
+
+Documentar el criterio importa: un ajuste de sonrisa que incluya esas cotizaciones queda
+dominado por ruido de instrumentos que no operan.
+
+## Curva del Tesoro
+
+```{r datos-curva}
+curva <- data.frame(
+  plazo = c(0.0833, 0.1667, 0.25, 0.3333, 0.5, 1, 2, 3, 5, 7, 10, 20, 30),
+  tenor = c("1M","2M","3M","4M","6M","1Y","2Y","3Y","5Y","7Y","10Y","20Y","30Y"),
+  tasa  = c(3.9715, 4.0835, 4.0820, 4.1905, 4.2690, 4.3755,
+            4.6030, 4.6710, 4.7320, 4.8230, 4.9350, 5.3420, 5.3145))
+
+ust <- function(T) approx(curva$plazo, curva$tasa, xout = T, rule = 2)$y / 100
+
+panel(); plot(curva$plazo, curva$tasa, type = "o", pch = 19, col = AZUL, lwd = 2,
+     log = "x", xlab = "Plazo (años, escala logarítmica)", ylab = "Rendimiento (%)",
+     ylim = c(3.8, 5.5), panel.first = grid(col = REJILLA, lty = 1))
+text(curva$plazo, curva$tasa, curva$tenor, pos = 3, cex = 0.7, col = TINTA)
+```
+
+La curva tiene pendiente positiva de **`r round((5.3145-3.9715)*100)` puntos base** entre
+el mes y los 30 años. Nótese que el plazo de 20 años rinde 5.342 % y el de 30 años
+5.3145 %: el tramo ultra largo está **invertido 2.7 puntos base**, una anomalía de
+liquidez habitual en el bono a 20 años.
+
+# C. Estructura de deuda y vencimientos
+
+## Escalera de vencimientos
+
+```{r c-escalera, fig.height=5.2}
+bonos$anio <- as.numeric(format(bonos$venc, "%Y"))
+grupos <- c("USD", "GBP", "CAD", "Otras")
+cols   <- c(AZUL, NARANJA, VERDE, GRIS)
+tab <- tapply(bonos$vig, list(factor(bonos$grupo, grupos), bonos$anio), sum)
+tab[is.na(tab)] <- 0
+
+panel()
+bp <- barplot(tab, col = cols, border = "white", las = 2, cex.names = 0.72,
+              ylab = "Millones de USD equivalentes", xlab = "")
+legend("topright", grupos, fill = cols, bty = "n", border = "white", cex = 0.85)
+```
+
+```{r c-moneda}
+mon <- tapply(bonos$vig, factor(bonos$grupo, grupos), sum)
+data.frame(Moneda = names(mon),
+           Emisiones = as.vector(table(factor(bonos$grupo, grupos))),
+           Vigente_MUSD = round(as.vector(mon), 1),
+           Participacion = pct(100 * as.vector(mon) / sum(bonos$vig)))
+```
+
+**`r usd(sum(bonos$vig[bonos$mon != "USD"]), 0)` millones**, el
+**`r pct(100*sum(bonos$vig[bonos$mon!="USD"])/sum(bonos$vig))`** de la deuda vigente, están
+denominados en cuatro divisas distintas al dólar. Esa es la exposición cambiaria
+estructural, independiente de la operativa.
+
+## Curva de rendimiento de la deuda de Walmart
+
+```{r c-curva-wmt, fig.height=5.2}
+panel()
+plot(bonos$anios, bonos$ytm, pch = 19, cex = 0.6 + 2.2 * sqrt(bonos$vig / max(bonos$vig)),
+     col = cols[match(bonos$grupo, grupos)],
+     xlab = "Años al vencimiento", ylab = "Rendimiento al vencimiento (%)",
+     panel.first = grid(col = REJILLA, lty = 1))
+lines(curva$plazo, curva$tasa, col = GRIS, lwd = 2, lty = 2)
+legend("bottomright", c(grupos, "Tesoro EUA"), col = c(cols, GRIS),
+       pch = c(19,19,19,19,NA), lty = c(NA,NA,NA,NA,2), lwd = 2, bty = "n", cex = 0.85)
+```
+
+```{r c-arbitraje}
+d33 <- bonos[format(bonos$venc, "%Y-%m") == "2033-10", ]
+data.frame(Moneda = d33$mon, Cupon = pct(d33$cpn), YTM = pct(d33$ytm, 3),
+           Z_spread_pb = round(d33$z, 1), Precio = d33$precio)
+```
+
+Los dos tramos con vencimiento en octubre de 2033 permiten una comparación limpia: mismo
+emisor, misma fecha de emisión, mismo vencimiento, dos divisas. El tramo en dólares rinde
+**`r pct(d33$ytm[d33$mon=="USD"],3)`** y el canadiense **`r pct(d33$ytm[d33$mon=="CAD"],3)`**:
+una ventaja de **`r round((d33$ytm[d33$mon=="USD"]-d33$ytm[d33$mon=="CAD"])*100)` puntos base**
+por emitir en dólares canadienses.
+
+Pero los Z-spreads van al revés: `r round(d33$z[d33$mon=="USD"],1)` pb en dólares contra
+`r round(d33$z[d33$mon=="CAD"],1)` pb en canadienses. Despejando, la curva gubernamental
+canadiense está unos
+**`r round((d33$ytm[d33$mon=="USD"]-d33$z[d33$mon=="USD"]/100) * 100 - (d33$ytm[d33$mon=="CAD"]-d33$z[d33$mon=="CAD"]/100)*100)` puntos base**
+por debajo de la estadounidense. **La ventaja es de curva, no de crédito.**
+
+Walmart no tiene operación canadiense que justifique C$5,000 millones de pasivo. Levantó
+barato en una divisa que no necesita, lo cual obliga a un *cross-currency swap* para
+regresar la exposición a dólares. Ese es el primer instrumento de cobertura del caso.
+
+## Walmart ya ejecuta el manual de Molson Coors
+
+```{r c-recompras, fig.height=5}
+pre <- bonos[bonos$emis < as.Date("2022-01-01"), ]
+pos <- bonos[bonos$emis >= as.Date("2022-01-01"), ]
+panel()
+plot(pre$cpn, pre$retirado, pch = 19, col = AZUL, ylim = c(-5, 75), xlim = range(bonos$cpn),
+     cex = 0.6 + 2.2 * sqrt(pre$emitido / max(bonos$emitido)),
+     xlab = "Cupón (%)", ylab = "Porcentaje del monto emitido ya retirado",
+     panel.first = grid(col = REJILLA, lty = 1))
+points(pos$cpn, pos$retirado, pch = 19, col = GRIS,
+       cex = 0.6 + 2.2 * sqrt(pos$emitido / max(bonos$emitido)))
+legend("topleft", c("Emitidos antes de 2022", "Emitidos de 2022 en adelante"),
+       col = c(AZUL, GRIS), pch = 19, bty = "n", cex = 0.85)
+
+bucket <- cut(pre$cpn, c(0, 3, 4.5, 99), labels = c("<3%", "3% a 4.5%", ">=4.5%"))
+ret <- tapply(seq_len(nrow(pre)), bucket,
+              function(i) sum(pre$retirado[i] * pre$emitido[i]) / sum(pre$emitido[i]))
+data.frame(Cupon = levels(bucket),
+           Emisiones = as.vector(table(bucket)),
+           Emitido_MUSD = round(as.vector(tapply(pre$emitido, bucket, sum)), 0),
+           Retirado = pct(as.vector(ret), 1))
+```
+
+De **`r usd(sum(bonos$emitido),0)` millones** emitidos históricamente quedan vigentes
+**`r usd(sum(bonos$vig),0)` millones**: ya se retiró el
+**`r pct(100*(1-sum(bonos$vig)/sum(bonos$emitido)),1)`** del total.
+
+El patrón no es aleatorio. Entre las emisiones anteriores a 2022, Walmart ha retirado cerca
+de la mitad del papel con cupón superior al 3 %, mientras que el de cupón inferior al 3 %
+permanece prácticamente intacto. Es exactamente el uso de fondos del caso Molson Coors, que
+destinó $465 millones a recomprar sus notas al 6.375 %. **La propuesta de este proyecto no
+inventa una estrategia: extiende una que la empresa ya demostró preferir.**
+
+## La pared de refinanciamiento
+
+```{r c-pared}
+baja <- bonos[bonos$cpn < 3, c("cpn","venc","emis","mon","vig","precio","ytm")]
+baja <- baja[order(baja$venc), ]
+names(baja) <- c("Cupon","Vence","Emitido","Moneda","Vigente_MUSD","Precio","YTM")
+baja
+```
+
+```{r c-pared-calc}
+cpn_bajo <- sum(baja$Cupon * baja$Vigente_MUSD) / sum(baja$Vigente_MUSD)
+nueva    <- bonos[bonos$emis == as.Date("2026-10-23") & bonos$mon == "USD", ]
+cpn_nuevo<- sum(nueva$cpn * nueva$vig) / sum(nueva$vig)
+cat("Cupón promedio ponderado del bucket <3%:", pct(cpn_bajo, 3), "\n")
+cat("Cupón promedio de la emisión del 23-oct en USD:", pct(cpn_nuevo, 3), "\n")
+cat("Brecha de repreciación:", round((cpn_nuevo - cpn_bajo) * 100), "pb\n")
+cat("Costo incremental anual al refinanciar:",
+    usd((cpn_nuevo - cpn_bajo) / 100 * sum(baja$Vigente_MUSD), 1), "M\n")
+```
+
+Molson Coors ejecutó toda su estructura —convertible, *call spread* y *T-lock*— para ahorrar
+cerca de $15 millones anuales. La exposición de Walmart es un orden de magnitud mayor.
+
+# H. Volatilidad implícita y griegas
+
+## Funciones de valoración
+
+```{r funciones-bs}
+# ---- Black-Scholes-Merton con dividendos discretos (modelo escrow, Hull cap. 15) ----
+vp_div <- function(divs, r) if (length(divs) == 0) 0 else
+  sum(sapply(divs, function(d) d$monto * exp(-r * d$t)))
+
+bs <- function(S, K, T, r, sigma, tipo = "call", divs = list()) {
+  Sa <- S - vp_div(divs, r)
+  if (T <= 0 || sigma <= 0) return(max(if (tipo == "call") Sa - K else K - Sa, 0))
+  d1 <- (log(Sa/K) + (r + 0.5*sigma^2)*T) / (sigma*sqrt(T)); d2 <- d1 - sigma*sqrt(T)
+  if (tipo == "call") Sa*pnorm(d1) - K*exp(-r*T)*pnorm(d2)
+  else                K*exp(-r*T)*pnorm(-d2) - Sa*pnorm(-d1)
+}
+
+vol_impl <- function(precio, S, K, T, r, tipo = "call", divs = list()) {
+  f <- function(s) bs(S, K, T, r, s, tipo, divs) - precio
+  if (f(1e-4) * f(5) > 0) return(NA_real_)
+  uniroot(f, c(1e-4, 5), tol = 1e-10)$root
+}
+```
+
+## Un hallazgo de convención: cómo mide LSEG el plazo
+
+Las primeras volatilidades implícitas calculadas con `T = 49/365` (del último trade del
+viernes 30 de octubre al vencimiento) salieron **sistemáticamente por debajo** de las que
+reporta LSEG, en calls y en puts por igual. Un sesgo del mismo signo en ambos tipos descarta
+que se trate del dividendo, porque el dividendo mueve calls y puts en direcciones opuestas.
+Tenía que ser el plazo.
+
+```{r h-daycount}
+cal <- opc[opc$K >= 110 & opc$K <= 135, ]
+prueba <- function(dias) {
+  T <- dias/365; td <- min(T_DIV, T*0.85)
+  d <- c(sapply(seq_len(nrow(cal)), function(i)
+           vol_impl(cal$c_mid[i], S0, cal$K[i], T, RF, "call",
+                    list(list(monto=DIV,t=td)))*100 - cal$c_iv[i]),
+         sapply(seq_len(nrow(cal)), function(i)
+           vol_impl(cal$p_mid[i], S0, cal$K[i], T, RF, "put",
+                    list(list(monto=DIV,t=td)))*100 - cal$p_iv[i]))
+  c(error_abs = mean(abs(d))*100, sesgo = mean(d)*100)
+}
+res <- t(sapply(c(49, 48, 47, 46, 45), prueba))
+data.frame(Dias = c(49,48,47,46,45),
+           Convencion = c("30-oct (último trade)","-","1-nov (fecha corriente)","-","-"),
+           Error_abs_pb = round(res[,1], 1), Sesgo_pb = round(res[,2], 1))
+```
+
+El plazo de **47 días** reduce el error medio absoluto de 72 a 20 puntos base y elimina el
+sesgo. **LSEG calcula el plazo desde la fecha calendario corriente**, aunque el mercado
+lleve dos días cerrado y las cotizaciones sean del viernes: el aplicativo recalcula de forma
+continua y no distingue si hubo operación.
+
+Es el mismo tipo de hallazgo que documentamos con TradingView en la actividad de árboles
+binomiales, donde la plataforma usaba días hábiles sobre año calendario e inflaba la
+implícita en un factor de 1.2. **Dos plataformas, dos convenciones distintas, y en ambos
+casos el modelo parecía estar mal cuando el supuesto equivocado era el del plazo.**
+
+## Validación contra LSEG
+
+```{r h-validacion}
+DIVS <- list(list(monto = DIV, t = T_DIV))
+val <- do.call(rbind, lapply(which(opc$K >= 110 & opc$K <= 135), function(i) {
+  data.frame(K = opc$K[i],
+    IV_call_nuestra = vol_impl(opc$c_mid[i], S0, opc$K[i], T_EXP, RF, "call", DIVS)*100,
+    IV_call_LSEG = opc$c_iv[i],
+    IV_put_nuestra = vol_impl(opc$p_mid[i], S0, opc$K[i], T_EXP, RF, "put", DIVS)*100,
+    IV_put_LSEG = opc$p_iv[i])
+}))
+val$dif_call_pb <- round((val$IV_call_nuestra - val$IV_call_LSEG) * 100, 1)
+val$dif_put_pb  <- round((val$IV_put_nuestra  - val$IV_put_LSEG)  * 100, 1)
+val[, c("K","IV_call_nuestra","IV_call_LSEG","dif_call_pb","dif_put_pb")] <- 
+  data.frame(val$K, round(val$IV_call_nuestra,4), val$IV_call_LSEG,
+             val$dif_call_pb, val$dif_put_pb)
+val[, c("K","IV_call_nuestra","IV_call_LSEG","dif_call_pb","dif_put_pb")]
+```
+
+Error medio absoluto de **`r round(mean(abs(c(val$dif_call_pb, val$dif_put_pb))),1)` puntos
+base de volatilidad** sobre `r 2*nrow(val)` contratos. Dentro del ancho del *bid-ask*.
+
+## La sonrisa de volatilidad
+
+```{r h-sonrisa, fig.height=5}
+panel()
+plot(opc$K, opc$c_iv, type = "o", pch = 19, col = AZUL, lwd = 2,
+     ylim = range(c(opc$c_iv, opc$p_iv), na.rm = TRUE),
+     xlab = "Precio de ejercicio (USD)", ylab = "Volatilidad implícita (%)",
+     panel.first = grid(col = REJILLA, lty = 1))
+lines(opc$K, opc$p_iv, type = "o", pch = 19, col = NARANJA, lwd = 2)
+abline(v = S0, col = GRIS, lty = 2)
+text(S0, max(opc$c_iv, na.rm = TRUE), " spot", pos = 4, cex = 0.8, col = TINTA)
+legend("topright", c("Call", "Put"), col = c(AZUL, NARANJA), lwd = 2, pch = 19,
+       bty = "n", cex = 0.85)
+```
+
+El mínimo está alrededor del strike 130 y la curva es plana entre 115 y 150, pero se empina
+con fuerza por debajo de 110: a strike 100 la implícita del call llega a
+`r pct(opc$c_iv[opc$K==100])`. Es **sesgo bajista**, la forma típica en acciones, donde la
+protección contra caídas fuertes cotiza con prima.
+
+Contrasta con lo observado en la actividad previa: NVDA mostraba un sesgo marcado y AMD una
+sonrisa plana por efecto de su reporte trimestral. Walmart queda en un punto intermedio.
+
+## Estructura temporal y el efecto del reporte trimestral
+
+```{r h-termino, fig.height=4.6}
+term <- data.frame(
+  venc = as.Date(c("2026-11-20","2026-12-18","2027-01-15","2027-03-19","2027-06-17",
+                   "2027-09-17","2027-12-17","2028-01-21","2028-12-15","2029-01-19")),
+  iv   = c(40.9952, 31.8928, 28.8456, 30.1326, 28.9643,
+           29.0274, 29.5291, 28.5010, 30.0047, 28.9917))
+term$anios <- as.numeric(term$venc - as.Date("2026-11-01")) / 365.25
+
+panel()
+plot(term$anios, term$iv, type = "o", pch = 19, col = AZUL, lwd = 2,
+     xlab = "Años al vencimiento", ylab = "Volatilidad implícita ATM (%)",
+     ylim = c(27, 42), panel.first = grid(col = REJILLA, lty = 1))
+abline(h = SIGMA_LP*100, col = VERDE, lty = 2, lwd = 2)
+points(term$anios[1], term$iv[1], pch = 19, col = NARANJA, cex = 1.6)
+text(term$anios[1], term$iv[1], " reporte trimestral", pos = 4, cex = 0.8, col = TINTA)
+legend("topright", "Volatilidad de largo plazo (29%)", col = VERDE, lty = 2, lwd = 2,
+       bty = "n", cex = 0.85)
+```
+
+El vencimiento del 20 de noviembre cotiza a **`r pct(term$iv[1])`**, unos doce puntos por
+encima del resto. El reporte trimestral de Walmart cae dentro de esa ventana y fuera de las
+demás. A partir de enero la curva se aplana en torno a **29 %** y se mantiene ahí tres años.
+
+**Consecuencia metodológica:** la volatilidad para valuar el convertible es la de los LEAPs,
+no la del mes cercano. Usar 41 % sobrevaluaría la opción de conversión y daría vuelta a toda
+la conclusión del proyecto.
+
+## Árbol binomial y griegas
+
+```{r funciones-arbol}
+# ---- Árbol Cox-Ross-Rubinstein con dividendo discreto (escrow, Hull cap. 21) ----
+crr <- function(S, K, T, r, sigma, N, tipo = "call", americana = TRUE, divs = list()) {
+  dt <- T/N; u <- exp(sigma*sqrt(dt)); d <- 1/u
+  p <- (exp(r*dt) - d)/(u - d); desc <- exp(-r*dt)
+  Sx <- S - vp_div(divs, r)
+  escrow <- function(i) { t <- i*dt
+    if (length(divs) == 0) 0 else
+      sum(sapply(divs, function(dv) if (dv$t > t) dv$monto*exp(-r*(dv$t - t)) else 0)) }
+  intr <- if (tipo == "call") function(s) pmax(s - K, 0) else function(s) pmax(K - s, 0)
+  j <- 0:N; ST <- Sx * u^j * d^(N - j) + escrow(N)
+  V <- intr(ST)
+  for (i in (N-1):0) {
+    j <- 0:i; Si <- Sx * u^j * d^(i - j) + escrow(i)
+    cont <- desc * (p*V[2:(i+2)] + (1-p)*V[1:(i+1)])
+    V <- if (americana) pmax(cont, intr(Si)) else cont
+  }
+  V[1]
+}
+
+valuar <- function(S, K, T, r, sigma, N, tipo = "call", divs = list()) {
+  eu <- crr(S, K, T, r, sigma, N, tipo, FALSE, divs)
+  am <- crr(S, K, T, r, sigma, N, tipo, TRUE,  divs)
+  c(europea = eu, americana = am, premio = am - eu)
+}
+```
+
+```{r h-hull}
+# Validación contra el ejemplo de referencia de Hull (cap. 21):
+# put americana, S=50, K=50, r=10%, sigma=40%, T=5 meses, N=5 -> 4.4886
+cat("Put americana de Hull, N=5:", round(crr(50, 50, 5/12, 0.10, 0.40, 5, "put"), 4),
+    "| referencia 4.4886\n")
+
+bs_ref <- bs(S0, 125, T_EXP, RF, 0.318928, "call", DIVS)
+conv <- sapply(c(10, 50, 100, 500, 1000, 2000), function(N)
+          crr(S0, 125, T_EXP, RF, 0.318928, N, "call", FALSE, DIVS))
+data.frame(N = c(10,50,100,500,1000,2000), Arbol = round(conv, 6),
+           Black_Scholes = round(bs_ref, 6), Diferencia = round(conv - bs_ref, 6))
+```
+
+```{r h-griegas}
+griegas_arbol <- function(S, K, T, r, sigma, N, tipo, divs, h = 0.01) {
+  f <- function(s, rr) crr(S, K, T, rr, s, N, tipo, TRUE, divs)
+  p0 <- f(sigma, r)
+  dS <- 0.01
+  pu <- crr(S+dS, K, T, r, sigma, N, tipo, TRUE, divs)
+  pd <- crr(S-dS, K, T, r, sigma, N, tipo, TRUE, divs)
+  c(precio = p0, delta = (pu - pd)/(2*dS), gamma = (pu - 2*p0 + pd)/dS^2,
+    vega = (f(sigma+h, r) - f(sigma-h, r))/(2*h)/100,
+    rho  = (f(sigma, r+1e-4) - f(sigma, r-1e-4))/(2e-4)/100)
+}
+
+gr <- do.call(rbind, lapply(c(115, 120, 125, 130), function(K) {
+  i <- which(opc$K == K)
+  gc <- griegas_arbol(S0, K, T_EXP, RF, opc$c_iv[i]/100, 600, "call", DIVS)
+  gp <- griegas_arbol(S0, K, T_EXP, RF, opc$p_iv[i]/100, 600, "put",  DIVS)
+  rbind(
+    data.frame(K = K, Tipo = "call", Delta = round(gc["delta"],4), Delta_LSEG = opc$c_delta[i],
+               Gamma = round(gc["gamma"],4), Gamma_LSEG = opc$c_gamma[i],
+               Vega = round(gc["vega"],4),  Vega_LSEG = opc$c_vega[i]),
+    data.frame(K = K, Tipo = "put",  Delta = round(gp["delta"],4), Delta_LSEG = opc$p_delta[i],
+               Gamma = round(gp["gamma"],4), Gamma_LSEG = opc$p_gamma[i],
+               Vega = round(gp["vega"],4),  Vega_LSEG = opc$p_vega[i]))
+}))
+rownames(gr) <- NULL
+gr
+```
+
+El árbol reproduce las griegas de LSEG con diferencias en la tercera cifra decimal. La
+validación cruzada contra Hull y la convergencia a Black-Scholes cierran la verificación del
+modelo.
+
+# I. Escenarios y sensibilidad
+
+## Premio de ejercicio anticipado
+
+```{r i-ejercicio}
+ej <- do.call(rbind, lapply(c(115, 120, 125, 130, 135), function(K) {
+  i <- which(opc$K == K)
+  vc <- valuar(S0, K, T_EXP, RF, opc$c_iv[i]/100, 800, "call", DIVS)
+  vp <- valuar(S0, K, T_EXP, RF, opc$p_iv[i]/100, 800, "put",  DIVS)
+  data.frame(K = K,
+             Call_europea = round(vc["europea"],4), Call_americana = round(vc["americana"],4),
+             Premio_call = pct(100*vc["premio"]/vc["americana"], 3),
+             Put_europea = round(vp["europea"],4), Put_americana = round(vp["americana"],4),
+             Premio_put = pct(100*vp["premio"]/vp["americana"], 3))
+}))
+rownames(ej) <- NULL
+ej
+```
+
+## El dividendo es la única fuente de ejercicio anticipado en una call
+
+```{r i-dividendo}
+iv125 <- opc$c_iv[opc$K == 125]/100
+exp_div <- do.call(rbind, lapply(c(0, 0.25, 0.75, 1.50, 2.50, 4.00), function(d) {
+  dv <- if (d > 0) list(list(monto = d, t = T_DIV)) else list()
+  v <- valuar(S0, 125, T_EXP, RF, iv125, 800, "call", dv)
+  data.frame(Dividendo = usd(d, 2), Europea = round(v["europea"],5),
+             Americana = round(v["americana"],5), Premio = round(v["premio"], 6))
+}))
+rownames(exp_div) <- NULL
+exp_div
+```
+
+**Con dividendo cero el premio es exactamente cero.** La call americana vale lo mismo que la
+europea, que es el resultado de Merton (1973). Con el dividendo real de Walmart el premio
+aparece y crece de forma monótona con su magnitud.
+
+Esto cierra el círculo con la actividad previa de árboles binomiales: allí los ocho
+subyacentes tenían `q = 0`, de modo que la igualdad entre americana y europea era un
+resultado teórico que se afirmaba sin poder exhibirlo. **Aquí se demuestra numéricamente con
+datos de mercado.**
+
+## Valoración del convertible
+
+```{r funciones-convertible}
+bono_recto <- function(cupon, anios, ytm, face = 100, f = 2) {
+  n <- round(anios*f); c <- face*cupon/f; y <- ytm/f
+  sum(c/(1+y)^(1:n)) + face/(1+y)^n
+}
+bs_q <- function(S, K, T, r, sigma, q) {
+  d1 <- (log(S/K) + (r - q + 0.5*sigma^2)*T)/(sigma*sqrt(T)); d2 <- d1 - sigma*sqrt(T)
+  S*exp(-q*T)*pnorm(d1) - K*exp(-r*T)*pnorm(d2)
+}
+convertible <- function(S, anios, ytm, sigma, q, prima, cupon, face = 100) {
+  K <- S*(1+prima); ratio <- face/K; r <- ust(anios)
+  list(K = K, ratio = ratio, bono = bono_recto(cupon, anios, ytm, face),
+       opcion = ratio*bs_q(S, K, anios, r, sigma, q))
+}
+cupon_par <- function(S, anios, ytm, sigma, q, prima, face = 100) {
+  f <- function(c) { v <- convertible(S, anios, ytm, sigma, q, prima, c, face)
+                     v$bono + v$opcion - face }
+  if (f(0) > 0) return(0)
+  uniroot(f, c(0, ytm*2), tol = 1e-12)$root
+}
+```
+
+```{r i-convertible}
+CV_T <- 6; CV_YTM <- 0.0514; CV_PRIMA <- 0.25; CV_EMISION <- 1500
+cp <- cupon_par(S0, CV_T, CV_YTM, SIGMA_LP, Q_DIV, CV_PRIMA)
+cv <- convertible(S0, CV_T, CV_YTM, SIGMA_LP, Q_DIV, CV_PRIMA, cp)
+data.frame(Concepto = c("Precio de conversión", "Acciones por 100 de nominal",
+                        "Cupón a la par", "Rendimiento de deuda recta",
+                        "Componente bono recto", "Componente opción", "Valor total"),
+           Valor = c(usd(cv$K, 2), round(cv$ratio, 4), pct(cp*100, 3), pct(CV_YTM*100, 3),
+                     round(cv$bono, 3), round(cv$opcion, 3), round(cv$bono + cv$opcion, 3)))
+```
+
+## No hay free lunch
+
+```{r i-freelunch}
+n <- CV_T*2; i <- CV_YTM/2; af <- sum(1/(1+i)^(1:n))
+vp_ahorro <- (CV_YTM - cp) * CV_EMISION/2 * af
+valor_opc <- cv$opcion/100 * CV_EMISION
+data.frame(Concepto = c("Valor presente del ahorro de cupón",
+                        "Valor de la opción entregada al tenedor", "Diferencia"),
+           Millones_USD = c(round(vp_ahorro,1), round(valor_opc,1),
+                            round(vp_ahorro - valor_opc,1)))
+```
+
+Son el mismo número. El convertible cotiza a la par precisamente porque el descuento de
+cupón que recibe el emisor equivale, peso por peso, al valor de la opción que entrega al
+tenedor. **El emisor no ahorra: vende optionalidad a precio de mercado y la cobra en forma
+de cupón reducido.**
+
+```{r i-trade-off, fig.height=5}
+primas <- seq(0.05, 0.80, by = 0.025)
+tr <- t(sapply(primas, function(p) {
+  c <- cupon_par(S0, CV_T, CV_YTM, SIGMA_LP, Q_DIV, p)
+  v <- convertible(S0, CV_T, CV_YTM, SIGMA_LP, Q_DIV, p, c)
+  c(opcion = v$opcion, ahorro = (CV_YTM - c)/2 * 100 * af)
+}))
+panel()
+plot(primas*100, tr[,"opcion"], type = "l", col = VERDE, lwd = 2.5,
+     xlab = "Prima de conversión (%)", ylab = "Valor por cada 100 de nominal",
+     ylim = c(0, max(tr)*1.05), panel.first = grid(col = REJILLA, lty = 1))
+lines(primas*100, tr[,"ahorro"], col = AZUL, lwd = 2.5, lty = 2)
+abline(v = CV_PRIMA*100, col = GRIS, lty = 3)
+legend("topright", c("Valor de la opción entregada", "VP del ahorro de cupón"),
+       col = c(VERDE, AZUL), lwd = 2.5, lty = c(1,2), bty = "n", cex = 0.85)
+```
+
+Las dos curvas se superponen en todo el rango relevante. Se separan por debajo de
+**14.5 %** de prima, y la separación también tiene sentido económico: ahí la opción vale
+tanto que ni siquiera con cupón cero el instrumento bajaría a la par. Existe entonces una
+prima mínima por debajo de la cual una emisión a la par es imposible.
+
+## Sensibilidad a la volatilidad
+
+```{r i-sens-vol}
+sv <- do.call(rbind, lapply(c(0.20, 0.24, 0.29, 0.34, 0.40), function(s) {
+  c <- cupon_par(S0, CV_T, CV_YTM, s, Q_DIV, CV_PRIMA)
+  v <- convertible(S0, CV_T, CV_YTM, s, Q_DIV, CV_PRIMA, c)
+  data.frame(Volatilidad = pct(s*100, 0), Cupon_par = pct(c*100, 3),
+             Bono = round(v$bono, 2), Opcion = round(v$opcion, 2),
+             Ahorro_pb = round((CV_YTM - c)*1e4))
+}))
+rownames(sv) <- NULL
+sv
+```
+
+La volatilidad de 29 % proviene de LEAPs a unos 2.2 años; **extrapolarla a seis años es un
+supuesto, no un dato**, y pesa mucho en el resultado. Con beta de `r BETA` podría
+argumentarse que la volatilidad de largo plazo de Walmart es inferior a la implícita de dos
+años. El reporte ejecutivo debe presentar el rango, no un número único.
+
+## Call spread
+
+```{r i-callspread}
+acc <- CV_EMISION*1e6/(S0*(1+CV_PRIMA))/1e6
+K1 <- S0*(1+CV_PRIMA); K2 <- S0*1.60
+c1 <- bs_q(S0, K1, CV_T, ust(CV_T), SIGMA_LP, Q_DIV)
+c2 <- bs_q(S0, K2, CV_T, ust(CV_T), SIGMA_LP, Q_DIV)
+data.frame(Concepto = c("Strike comprado (prima 25%)", "Strike vendido (prima 60%)",
+                        "Acciones subyacentes (millones)", "Prima pagada",
+                        "Prima cobrada", "Costo neto", "Porcentaje de la emisión"),
+           Valor = c(usd(K1,2), usd(K2,2), round(acc,2), usd(c1*acc,1), usd(c2*acc,1),
+                     usd((c1-c2)*acc,1), pct((c1-c2)*acc/CV_EMISION*100)))
+```
+
+Molson Coors pagó $106.7 millones y cobró $57.0 millones, un neto de $49.7 millones sobre
+$575 millones, equivalente al **8.6 %** de su emisión. Walmart sale en
+**`r pct((c1-c2)*acc/CV_EMISION*100)`**, más barato en términos relativos porque su sesgo de
+volatilidad es menos pronunciado y el warrant lejano se vende relativamente mejor.
+
+La estructura eleva la prima de conversión efectiva de 25 % a 60 %: no hay dilución mientras
+la acción no supere **`r usd(K2,2)`**. Por encima de ese nivel la dilución reaparece.
+
+## Uso de fondos
+
+```{r i-fondos}
+obj <- bonos[bonos$cpn == 2.65, ]
+data.frame(Concepto = c("Emisión del convertible", "Objetivo de recompra",
+                        "Precio de mercado", "Valor facial a retirar",
+                        "Costo de la recompra", "Descuento capturado",
+                        "Facial retirado por dólar", "Costo neto del call spread",
+                        "Remanente"),
+           Valor = c(usd(CV_EMISION,0), "Nota 2.65% con vencimiento 2051",
+                     round(obj$precio,3), usd(obj$vig,1), usd(obj$vig*obj$precio/100,1),
+                     usd(obj$vig*(1 - obj$precio/100),1), round(100/obj$precio,3),
+                     usd((c1-c2)*acc,1),
+                     usd(CV_EMISION - obj$vig*obj$precio/100 - (c1-c2)*acc,1)))
+```
+
+Cada dólar de efectivo retira **`r round(100/obj$precio,2)` dólares de valor facial**. Es la
+oportunidad que abre un entorno de tasas altas sobre deuda emitida barata, y es la pieza que
+da sentido económico a la estructura más allá del arbitraje de cupón.
+
+# Conclusiones
+
+1. **La necesidad de cobertura es real y está documentada.** Walmart tiene
+   `r usd(sum(bonos$vig[bonos$mon!="USD"]),0)` millones de deuda en cuatro divisas distintas
+   al dólar y un bucket de `r usd(sum(baja$Vigente_MUSD),0)` millones con cupón promedio de
+   `r pct(cpn_bajo,2)` que debe refinanciarse a tasas superiores al 5 %.
+
+2. **El arbitraje de fondeo en dólares canadienses exige un cross-currency swap.** La ventaja
+   de 94 puntos base es de curva, no de crédito, y Walmart no tiene operación canadiense que
+   justifique mantener el pasivo en esa divisa.
+
+3. **El convertible no genera ahorro económico.** El valor presente del descuento de cupón
+   iguala exactamente el valor de la opción entregada. Para un emisor de grado de inversión
+   alto, con un spread de crédito de
+   `r round(sum(bonos$z*bonos$vig, na.rm=TRUE)/sum(bonos$vig[!is.na(bonos$z)]))`
+   puntos base, la estructura no se justifica por costo de fondeo.
+
+4. **Lo que sí tiene valor es la recompra a descuento.** Retirar valor facial a 57.86 centavos
+   por dólar captura una ganancia que no depende de ninguna opinión sobre la acción.
+
+5. **El dividendo hace no trivial el ejercicio anticipado.** A diferencia de la actividad
+   previa, donde `q = 0` volvía la call americana idéntica a la europea por construcción,
+   aquí el premio de ejercicio anticipado existe y es medible.
+
+# Anexo: entorno de ejecución
+
+```{r sesion}
+sessionInfo()
+```
